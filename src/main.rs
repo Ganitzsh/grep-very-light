@@ -1,5 +1,4 @@
 use std::{
-    fs::File,
     io::{BufRead, BufReader},
     ops::Range,
 };
@@ -14,7 +13,7 @@ struct Cli {
     pattern: String,
 
     #[arg(short, long)]
-    file: String,
+    input: Option<String>,
 
     #[arg(short, long)]
     before: Option<usize>,
@@ -24,21 +23,30 @@ struct Cli {
 }
 
 #[derive(Debug)]
-struct GrepFile<'a> {
-    pattern: Regex,
-    file: &'a File,
+struct Grep {
     markers: Vec<usize>,
     lines: Vec<String>,
 }
 
-impl<'a> GrepFile<'a> {
-    fn new(file: &'a File, pattern: Regex) -> Self {
-        GrepFile {
-            pattern,
-            file: &file,
-            markers: Vec::new(),
-            lines: Vec::new(),
+impl Grep {
+    fn new<T: BufRead + Sized>(inner: T, pattern: Regex) -> Self {
+        let reader = BufReader::new(inner);
+
+        let mut lines: Vec<String> = Vec::new();
+        let mut markers: Vec<usize> = Vec::new();
+
+        for (line_number, line_) in reader.lines().enumerate() {
+            let line = line_.unwrap();
+
+            lines.push(line.clone());
+
+            match pattern.find(&line) {
+                Some(_) => markers.push(line_number),
+                None => (),
+            }
         }
+
+        Grep { markers, lines }
     }
 
     fn print_lines(&self, range: Range<i32>, prefix: Option<&str>) {
@@ -54,20 +62,7 @@ impl<'a> GrepFile<'a> {
         }
     }
 
-    fn look_for_pattern(&mut self, ctx_before: usize, ctx_after: usize) {
-        let reader = BufReader::new(self.file);
-
-        for (line_number, line_) in reader.lines().enumerate() {
-            let line = line_.unwrap();
-
-            self.lines.push(line.clone());
-
-            match self.pattern.find(&line) {
-                Some(_) => self.markers.push(line_number),
-                None => (),
-            }
-        }
-
+    fn print_results(&mut self, ctx_before: usize, ctx_after: usize) {
         for line_number_ in self.markers.iter() {
             let line_number = *line_number_ as i32;
 
@@ -75,15 +70,13 @@ impl<'a> GrepFile<'a> {
                 let min: i32 = line_number - ctx_before as i32;
                 self.print_lines(min..line_number, Some("-"))
             }
-
-            println!("> {}:\t{}", line_number, self.lines[*line_number_].clone());
-
+            self.print_lines(line_number..line_number + 1, Some(">"));
             if ctx_after > 0 {
-                let max: i32 = 1 + line_number + ctx_before as i32;
-                self.print_lines(line_number..max, Some("-"));
+                let max: i32 = 1 + line_number + ctx_after as i32;
+                self.print_lines((line_number + 1)..max, Some("-"));
             }
 
-            println!("---");
+            println!();
         }
     }
 }
@@ -92,9 +85,19 @@ fn main() {
     let cli = Cli::parse();
 
     let pattern = Regex::new(&cli.pattern).unwrap();
-    let file = std::fs::File::open(cli.file).unwrap();
+    let input = cli.input.unwrap_or("-".to_string());
 
-    let mut grep_file = GrepFile::new(&file, pattern);
+    if input == "-".to_string() {
+        let stdin = std::io::stdin();
+        let handle = stdin.lock();
+        let mut grep = Grep::new(handle, pattern);
 
-    grep_file.look_for_pattern(cli.before.unwrap_or(0), cli.after.unwrap_or(0));
+        grep.print_results(cli.before.unwrap_or(0), cli.after.unwrap_or(0));
+    } else {
+        let file = std::fs::File::open(input).unwrap();
+        let handle = BufReader::new(file);
+        let mut grep = Grep::new(handle, pattern);
+
+        grep.print_results(cli.before.unwrap_or(0), cli.after.unwrap_or(0));
+    }
 }
